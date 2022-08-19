@@ -294,7 +294,7 @@ func (g *Group) load(ctx context.Context, key string, dest Sink) (value ByteView
 		g.Stats.LocalLoads.Add(1)
 		g.populateCache(fullKey, value, &g.mainCache)
 		if isRange {
-			value = value.Slice(start, end)
+			value = value.Slice(int(start), int(end))
 		}
 		return value, nil
 	})
@@ -348,7 +348,7 @@ func (g *Group) lookupCache(key string) (value ByteView, ok bool) {
 	value, ok = g.mainCache.get(fullKey)
 	if ok {
 		if isRange {
-			value = value.Slice(start, end)
+			value = value.Slice(int(start), int(end))
 		}
 		return
 	}
