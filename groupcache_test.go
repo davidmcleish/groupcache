@@ -59,7 +59,7 @@ func testSetup() {
 			key = <-stringc
 		}
 		cacheFills.Add(1)
-		return dest.Set(CacheEntry{data: []byte("ECHO:" + key)})
+		return dest.Set(CacheEntry{Data: []byte("ECHO:" + key)})
 	}))
 }
 
@@ -75,7 +75,7 @@ func TestGetDupSuppress(t *testing.T) {
 		go func() {
 			var e CacheEntry
 			if err := group.Get(dummyCtx, fromChan, CacheEntrySink(&e)); err != nil {
-				resc <- CacheEntry{meta: []byte("ERROR:" + err.Error())}
+				resc <- CacheEntry{Meta: []byte("ERROR:" + err.Error())}
 				return
 			}
 			resc <- e
@@ -96,7 +96,7 @@ func TestGetDupSuppress(t *testing.T) {
 	for i := 0; i < 2; i++ {
 		select {
 		case v := <-resc:
-			if string(v.data) != "ECHO:foo" {
+			if string(v.Data) != "ECHO:foo" {
 				t.Errorf("got %q; want %q", v, "ECHO:foo")
 			}
 		case <-time.After(5 * time.Second):
@@ -202,7 +202,7 @@ func TestPeers(t *testing.T) {
 	localHits := 0
 	getter := func(_ context.Context, key string, dest Sink) error {
 		localHits++
-		return dest.Set(CacheEntry{data: []byte("got:" + key)})
+		return dest.Set(CacheEntry{Data: []byte("got:" + key)})
 	}
 	testGroup := newGroup("TestPeers-group", cacheSize, GetterFunc(getter), peerList)
 	run := func(name string, n int, wantSummary string) {
@@ -221,7 +221,7 @@ func TestPeers(t *testing.T) {
 				t.Errorf("%s: error on key %q: %v", name, key, err)
 				continue
 			}
-			if string(got.data) != want {
+			if string(got.Data) != want {
 				t.Errorf("%s: for key %q, got %q; want %q", name, key, got, want)
 			}
 		}
@@ -267,8 +267,8 @@ func TestAllocatingByteSliceTarget(t *testing.T) {
 	sink := AllocatingCacheEntrySink(&data, &meta)
 
 	inEntry := CacheEntry{
-		data: []byte("some bytes"),
-		meta: []byte("some metadata"),
+		Data: []byte("some bytes"),
+		Meta: []byte("some metadata"),
 	}
 	sink.Set(inEntry)
 	if want := "some bytes"; string(data) != want {
@@ -281,23 +281,23 @@ func TestAllocatingByteSliceTarget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("view after SetBytes failed: %v", err)
 	}
-	if &inEntry.data[0] == &data[0] {
+	if &inEntry.Data[0] == &data[0] {
 		t.Error("inEntry.data and data share memory")
 	}
-	if &inEntry.data[0] == &v.data[0] {
+	if &inEntry.Data[0] == &v.Data[0] {
 		t.Error("inEntry.data and view share memory")
 	}
-	if &data[0] == &v.data[0] {
+	if &data[0] == &v.Data[0] {
 		t.Error("data and view share memory")
 	}
 
-	if &inEntry.meta[0] == &meta[0] {
+	if &inEntry.Meta[0] == &meta[0] {
 		t.Error("inEntry.meta and meta share memory")
 	}
-	if &inEntry.meta[0] == &v.meta[0] {
+	if &inEntry.Meta[0] == &v.Meta[0] {
 		t.Error("inEntry.meta and view share memory")
 	}
-	if &meta[0] == &v.meta[0] {
+	if &meta[0] == &v.Meta[0] {
 		t.Error("meta and view share memory")
 	}
 }
@@ -325,8 +325,8 @@ func (g *orderedFlightGroup) Do(key string, fn func() (interface{}, error)) (int
 func TestNoDedup(t *testing.T) {
 	const testkey = "testkey"
 	testval := CacheEntry{
-		data: []byte("testdata"),
-		meta: []byte("testmeta"),
+		Data: []byte("testdata"),
+		Meta: []byte("testmeta"),
 	}
 	g := newGroup("testgroup", 1024, GetterFunc(func(_ context.Context, key string, dest Sink) error {
 		return dest.Set(testval)
@@ -350,7 +350,7 @@ func TestNoDedup(t *testing.T) {
 		go func() {
 			var e CacheEntry
 			if err := g.Get(dummyCtx, testkey, CacheEntrySink(&e)); err != nil {
-				resc <- CacheEntry{data: []byte("ERROR:" + err.Error())}
+				resc <- CacheEntry{Data: []byte("ERROR:" + err.Error())}
 				return
 			}
 			resc <- e
@@ -366,7 +366,7 @@ func TestNoDedup(t *testing.T) {
 	orderedGroup.stage2 <- true
 
 	for i := 0; i < 2; i++ {
-		if s := <-resc; string(s.data) != string(testval.data) || string(s.meta) != string(testval.meta) {
+		if s := <-resc; string(s.Data) != string(testval.Data) || string(s.Meta) != string(testval.Meta) {
 			t.Errorf("result is %s want %s", s, testval)
 		}
 	}

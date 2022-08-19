@@ -43,8 +43,8 @@ type cacheEntrySink struct {
 
 func (s *cacheEntrySink) Set(v CacheEntry) error {
 	*s.dst = CacheEntry{
-		data: cloneBytes(v.data),
-		meta: cloneBytes(v.meta),
+		Data: cloneBytes(v.Data),
+		Meta: cloneBytes(v.Meta),
 	}
 	return nil
 }
@@ -77,11 +77,11 @@ func (s *allocCacheEntrySink) view() (CacheEntry, error) {
 
 func (s *allocCacheEntrySink) setView(v CacheEntry) error {
 	// TODO: is this supposed to clone or not? I don't get it.
-	if v.data != nil {
-		*s.data = cloneBytes(v.data)
+	if v.Data != nil {
+		*s.data = cloneBytes(v.Data)
 	}
-	if v.meta != nil {
-		*s.meta = cloneBytes(v.meta)
+	if v.Meta != nil {
+		*s.meta = cloneBytes(v.Meta)
 	}
 	s.v = v
 	return nil
@@ -89,8 +89,8 @@ func (s *allocCacheEntrySink) setView(v CacheEntry) error {
 
 func (s *allocCacheEntrySink) Set(v CacheEntry) error {
 	s.setView(CacheEntry{
-		data: cloneBytes(v.data),
-		meta: cloneBytes(v.meta),
+		Data: cloneBytes(v.Data),
+		Meta: cloneBytes(v.Meta),
 	})
 	return nil
 }

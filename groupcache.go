@@ -294,7 +294,7 @@ func (g *Group) load(ctx context.Context, key string, dest Sink) (value CacheEnt
 		g.Stats.LocalLoads.Add(1)
 		g.populateCache(fullKey, value, &g.mainCache)
 		if isRange {
-			value.data = value.data[start:end]
+			value.Data = value.Data[start:end]
 		}
 		return value, nil
 	})
@@ -331,8 +331,8 @@ func (g *Group) getFromPeer(ctx context.Context, peer ProtoGetter, key string) (
 		return CacheEntry{}, err
 	}
 	value := CacheEntry{
-		data: res.Value,
-		meta: res.Metadata,
+		Data: res.Value,
+		Meta: res.Metadata,
 	}
 	// TODO(bradfitz): use res.MinuteQps or something smart to
 	// conditionally populate hotCache.  For now just do it some
@@ -351,7 +351,7 @@ func (g *Group) lookupCache(key string) (value CacheEntry, ok bool) {
 	value, ok = g.mainCache.get(fullKey)
 	if ok {
 		if isRange {
-			value.data = value.data[start:end]
+			value.Data = value.Data[start:end]
 		}
 		return
 	}
@@ -400,12 +400,12 @@ const (
 )
 
 type CacheEntry struct {
-	data []byte
-	meta []byte
+	Data []byte
+	Meta []byte
 }
 
 func (c CacheEntry) Len() int {
-	return len(c.data) + len(c.meta)
+	return len(c.Data) + len(c.Meta)
 }
 
 // CacheStats returns stats about the provided cache within the group.

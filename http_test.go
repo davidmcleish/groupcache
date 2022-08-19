@@ -96,7 +96,7 @@ func TestHTTPPool(t *testing.T) {
 		if err := g.Get(context.TODO(), key, CacheEntrySink(&value)); err != nil {
 			t.Fatal(err)
 		}
-		if suffix := ":" + key; !strings.HasSuffix(string(value.data), suffix) {
+		if suffix := ":" + key; !strings.HasSuffix(string(value.Data), suffix) {
 			t.Errorf("Get(%q) = %q, want value ending in %q", key, value, suffix)
 		}
 		t.Logf("Get key=%q, value=%q (peer:key)", key, value)
@@ -118,7 +118,7 @@ func beChildForTestHTTPPool() {
 	p.Set(addrToURL(addrs)...)
 
 	getter := GetterFunc(func(ctx context.Context, key string, dest Sink) error {
-		dest.Set(CacheEntry{data: []byte(strconv.Itoa(*peerIndex) + ":" + key)})
+		dest.Set(CacheEntry{Data: []byte(strconv.Itoa(*peerIndex) + ":" + key)})
 		return nil
 	})
 	NewGroup("httpPoolTest", 1<<20, getter)
