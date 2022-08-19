@@ -27,6 +27,7 @@ package groupcache
 import (
 	"context"
 	"errors"
+	"log"
 	"math/rand"
 	"strconv"
 	"sync"
@@ -263,22 +264,25 @@ func (g *Group) load(ctx context.Context, key string, dest Sink) (value ByteView
 			return value, nil
 		}
 		g.Stats.LoadsDeduped.Add(1)
+		fullKey, start, end, isRange := KeyToRange(key)
 		var value ByteView
 		var err error
-		if peer, ok := g.peers.PickPeer(key); ok {
+		if peer, ok := g.peers.PickPeer(fullKey); ok {
 			value, err = g.getFromPeer(ctx, peer, key)
 			if err == nil {
 				g.Stats.PeerLoads.Add(1)
 				return value, nil
 			}
 			g.Stats.PeerErrors.Add(1)
-			// TODO(bradfitz): log the peer's error? keep
-			// log of the past few for /groupcachez?  It's
-			// probably boring (normal task movement), so not
-			// worth logging I imagine.
+			log.Println("peer error:", err)
+			// After peer error, only fetch the range
+			value, err = g.getLocally(ctx, key, dest)
+			if err != nil {
+				g.Stats.LocalLoadErrs.Add(1)
+			}
+			return value, err
 		}
 		// TODO(davidmcleish): singleflight using full key
-		fullKey, start, end, isRange := KeyToRange(key)
 		value, err = g.getLocally(ctx, fullKey, dest)
 		if err != nil {
 			g.Stats.LocalLoadErrs.Add(1)
@@ -327,13 +331,18 @@ func (g *Group) getFromPeer(ctx context.Context, peer ProtoGetter, key string) (
 }
 
 func (g *Group) lookupCache(key string) (value ByteView, ok bool) {
+	fullKey, start, end, isRange := KeyToRange(key)
 	if g.cacheBytes <= 0 {
 		return
 	}
-	value, ok = g.mainCache.get(key)
+	value, ok = g.mainCache.get(fullKey)
 	if ok {
+		if isRange {
+			value = value.Slice(start, end)
+		}
 		return
 	}
+	// TODO(davidmcleish): figure out what to do with the hot cache
 	value, ok = g.hotCache.get(key)
 	return
 }
