@@ -277,14 +277,19 @@ func (g *Group) load(ctx context.Context, key string, dest Sink) (value ByteView
 			// probably boring (normal task movement), so not
 			// worth logging I imagine.
 		}
-		value, err = g.getLocally(ctx, key, dest)
+		// TODO(davidmcleish): singleflight using full key
+		fullKey, start, end, isRange := KeyToRange(key)
+		value, err = g.getLocally(ctx, fullKey, dest)
 		if err != nil {
 			g.Stats.LocalLoadErrs.Add(1)
 			return nil, err
 		}
 		g.Stats.LocalLoads.Add(1)
 		destPopulated = true // only one caller of load gets this return value
-		g.populateCache(key, value, &g.mainCache)
+		g.populateCache(fullKey, value, &g.mainCache)
+		if isRange {
+			value = value.Slice(start, end)
+		}
 		return value, nil
 	})
 	if err == nil {
