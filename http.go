@@ -166,15 +166,15 @@ func (p *HTTPPool) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	group.Stats.ServerRequests.Add(1)
-	var value []byte
-	err := group.Get(ctx, key, AllocatingByteSliceSink(&value))
+	var data, meta []byte
+	err := group.Get(ctx, key, AllocatingCacheEntrySink(&data, &meta))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	// Write the value to the response body as a proto message.
-	body, err := proto.Marshal(&pb.GetResponse{Value: value})
+	body, err := proto.Marshal(&pb.GetResponse{Value: data, Metadata: meta})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

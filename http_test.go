@@ -92,11 +92,11 @@ func TestHTTPPool(t *testing.T) {
 	g := NewGroup("httpPoolTest", 1<<20, getter)
 
 	for _, key := range testKeys(nGets) {
-		var value string
-		if err := g.Get(context.TODO(), key, StringSink(&value)); err != nil {
+		var value CacheEntry
+		if err := g.Get(context.TODO(), key, CacheEntrySink(&value)); err != nil {
 			t.Fatal(err)
 		}
-		if suffix := ":" + key; !strings.HasSuffix(value, suffix) {
+		if suffix := ":" + key; !strings.HasSuffix(string(value.data), suffix) {
 			t.Errorf("Get(%q) = %q, want value ending in %q", key, value, suffix)
 		}
 		t.Logf("Get key=%q, value=%q (peer:key)", key, value)
@@ -118,7 +118,7 @@ func beChildForTestHTTPPool() {
 	p.Set(addrToURL(addrs)...)
 
 	getter := GetterFunc(func(ctx context.Context, key string, dest Sink) error {
-		dest.SetString(strconv.Itoa(*peerIndex) + ":" + key)
+		dest.Set(CacheEntry{data: []byte(strconv.Itoa(*peerIndex) + ":" + key)})
 		return nil
 	})
 	NewGroup("httpPoolTest", 1<<20, getter)

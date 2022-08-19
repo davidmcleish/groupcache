@@ -24,21 +24,17 @@ import (
 	"fmt"
 	"hash/crc32"
 	"math/rand"
-	"reflect"
 	"sync"
 	"testing"
 	"time"
 	"unsafe"
 
-	"github.com/golang/protobuf/proto"
-
 	pb "github.com/davidmcleish/groupcache/groupcachepb"
-	testpb "github.com/davidmcleish/groupcache/testpb"
 )
 
 var (
-	once                    sync.Once
-	stringGroup, protoGroup Getter
+	once  sync.Once
+	group Getter
 
 	stringc = make(chan string)
 
@@ -51,50 +47,38 @@ var (
 )
 
 const (
-	stringGroupName = "string-group"
-	protoGroupName  = "proto-group"
+	groupName       = "group"
 	testMessageType = "google3/net/groupcache/go/test_proto.TestMessage"
 	fromChan        = "from-chan"
 	cacheSize       = 1 << 20
 )
 
 func testSetup() {
-	stringGroup = NewGroup(stringGroupName, cacheSize, GetterFunc(func(_ context.Context, key string, dest Sink) error {
+	group = NewGroup(groupName, cacheSize, GetterFunc(func(_ context.Context, key string, dest Sink) error {
 		if key == fromChan {
 			key = <-stringc
 		}
 		cacheFills.Add(1)
-		return dest.SetString("ECHO:" + key)
-	}))
-
-	protoGroup = NewGroup(protoGroupName, cacheSize, GetterFunc(func(_ context.Context, key string, dest Sink) error {
-		if key == fromChan {
-			key = <-stringc
-		}
-		cacheFills.Add(1)
-		return dest.SetProto(&testpb.TestMessage{
-			Name: proto.String("ECHO:" + key),
-			City: proto.String("SOME-CITY"),
-		})
+		return dest.Set(CacheEntry{data: []byte("ECHO:" + key)})
 	}))
 }
 
-// TestGetDupSuppressString tests that a Getter's Get method is only called once with two
-// outstanding callers.  This is the string variant.
-func TestGetDupSuppressString(t *testing.T) {
+// TestGetDupSuppress tests that a Getter's Get method is only called once with two
+// outstanding callers.
+func TestGetDupSuppress(t *testing.T) {
 	once.Do(testSetup)
 	// Start two getters. The first should block (waiting reading
 	// from stringc) and the second should latch on to the first
 	// one.
-	resc := make(chan string, 2)
+	resc := make(chan CacheEntry, 2)
 	for i := 0; i < 2; i++ {
 		go func() {
-			var s string
-			if err := stringGroup.Get(dummyCtx, fromChan, StringSink(&s)); err != nil {
-				resc <- "ERROR:" + err.Error()
+			var e CacheEntry
+			if err := group.Get(dummyCtx, fromChan, CacheEntrySink(&e)); err != nil {
+				resc <- CacheEntry{meta: []byte("ERROR:" + err.Error())}
 				return
 			}
-			resc <- s
+			resc <- e
 		}()
 	}
 
@@ -112,52 +96,8 @@ func TestGetDupSuppressString(t *testing.T) {
 	for i := 0; i < 2; i++ {
 		select {
 		case v := <-resc:
-			if v != "ECHO:foo" {
+			if string(v.data) != "ECHO:foo" {
 				t.Errorf("got %q; want %q", v, "ECHO:foo")
-			}
-		case <-time.After(5 * time.Second):
-			t.Errorf("timeout waiting on getter #%d of 2", i+1)
-		}
-	}
-}
-
-// TestGetDupSuppressProto tests that a Getter's Get method is only called once with two
-// outstanding callers.  This is the proto variant.
-func TestGetDupSuppressProto(t *testing.T) {
-	once.Do(testSetup)
-	// Start two getters. The first should block (waiting reading
-	// from stringc) and the second should latch on to the first
-	// one.
-	resc := make(chan *testpb.TestMessage, 2)
-	for i := 0; i < 2; i++ {
-		go func() {
-			tm := new(testpb.TestMessage)
-			if err := protoGroup.Get(dummyCtx, fromChan, ProtoSink(tm)); err != nil {
-				tm.Name = proto.String("ERROR:" + err.Error())
-			}
-			resc <- tm
-		}()
-	}
-
-	// Wait a bit so both goroutines get merged together via
-	// singleflight.
-	// TODO(bradfitz): decide whether there are any non-offensive
-	// debug/test hooks that could be added to singleflight to
-	// make a sleep here unnecessary.
-	time.Sleep(250 * time.Millisecond)
-
-	// Unblock the first getter, which should unblock the second
-	// as well.
-	stringc <- "Fluffy"
-	want := &testpb.TestMessage{
-		Name: proto.String("ECHO:Fluffy"),
-		City: proto.String("SOME-CITY"),
-	}
-	for i := 0; i < 2; i++ {
-		select {
-		case v := <-resc:
-			if !reflect.DeepEqual(v, want) {
-				t.Errorf(" Got: %v\nWant: %v", proto.CompactTextString(v), proto.CompactTextString(want))
 			}
 		case <-time.After(5 * time.Second):
 			t.Errorf("timeout waiting on getter #%d of 2", i+1)
@@ -175,8 +115,8 @@ func TestCaching(t *testing.T) {
 	once.Do(testSetup)
 	fills := countFills(func() {
 		for i := 0; i < 10; i++ {
-			var s string
-			if err := stringGroup.Get(dummyCtx, "TestCaching-key", StringSink(&s)); err != nil {
+			var e CacheEntry
+			if err := group.Get(dummyCtx, "TestCaching-key", CacheEntrySink(&e)); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -190,9 +130,9 @@ func TestCacheEviction(t *testing.T) {
 	once.Do(testSetup)
 	testKey := "TestCacheEviction-key"
 	getTestKey := func() {
-		var res string
+		var res CacheEntry
 		for i := 0; i < 10; i++ {
-			if err := stringGroup.Get(dummyCtx, testKey, StringSink(&res)); err != nil {
+			if err := group.Get(dummyCtx, testKey, CacheEntrySink(&res)); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -202,17 +142,17 @@ func TestCacheEviction(t *testing.T) {
 		t.Fatalf("expected 1 cache fill; got %d", fills)
 	}
 
-	g := stringGroup.(*Group)
+	g := group.(*Group)
 	evict0 := g.mainCache.nevict
 
 	// Trash the cache with other keys.
 	var bytesFlooded int64
 	// cacheSize/len(testKey) is approximate
 	for bytesFlooded < cacheSize+1024 {
-		var res string
+		var res CacheEntry
 		key := fmt.Sprintf("dummy-key-%d", bytesFlooded)
-		stringGroup.Get(dummyCtx, key, StringSink(&res))
-		bytesFlooded += int64(len(key) + len(res))
+		group.Get(dummyCtx, key, CacheEntrySink(&res))
+		bytesFlooded += int64(len(key) + res.Len())
 	}
 	evicts := g.mainCache.nevict - evict0
 	if evicts <= 0 {
@@ -262,7 +202,7 @@ func TestPeers(t *testing.T) {
 	localHits := 0
 	getter := func(_ context.Context, key string, dest Sink) error {
 		localHits++
-		return dest.SetString("got:" + key)
+		return dest.Set(CacheEntry{data: []byte("got:" + key)})
 	}
 	testGroup := newGroup("TestPeers-group", cacheSize, GetterFunc(getter), peerList)
 	run := func(name string, n int, wantSummary string) {
@@ -275,13 +215,13 @@ func TestPeers(t *testing.T) {
 		for i := 0; i < n; i++ {
 			key := fmt.Sprintf("key-%d", i)
 			want := "got:" + key
-			var got string
-			err := testGroup.Get(dummyCtx, key, StringSink(&got))
+			var got CacheEntry
+			err := testGroup.Get(dummyCtx, key, CacheEntrySink(&got))
 			if err != nil {
 				t.Errorf("%s: error on key %q: %v", name, key, err)
 				continue
 			}
-			if got != want {
+			if string(got.data) != want {
 				t.Errorf("%s: for key %q, got %q; want %q", name, key, got, want)
 			}
 		}
@@ -322,46 +262,43 @@ func TestPeers(t *testing.T) {
 	run("peer0_failing", 200, "localHits = 100, peers = 51 49 51")
 }
 
-func TestTruncatingByteSliceTarget(t *testing.T) {
-	var buf [100]byte
-	s := buf[:]
-	if err := stringGroup.Get(dummyCtx, "short", TruncatingByteSliceSink(&s)); err != nil {
-		t.Fatal(err)
-	}
-	if want := "ECHO:short"; string(s) != want {
-		t.Errorf("short key got %q; want %q", s, want)
-	}
-
-	s = buf[:6]
-	if err := stringGroup.Get(dummyCtx, "truncated", TruncatingByteSliceSink(&s)); err != nil {
-		t.Fatal(err)
-	}
-	if want := "ECHO:t"; string(s) != want {
-		t.Errorf("truncated key got %q; want %q", s, want)
-	}
-}
-
 func TestAllocatingByteSliceTarget(t *testing.T) {
-	var dst []byte
-	sink := AllocatingByteSliceSink(&dst)
+	var data, meta []byte
+	sink := AllocatingCacheEntrySink(&data, &meta)
 
-	inBytes := []byte("some bytes")
-	sink.SetBytes(inBytes)
-	if want := "some bytes"; string(dst) != want {
-		t.Errorf("SetBytes resulted in %q; want %q", dst, want)
+	inEntry := CacheEntry{
+		data: []byte("some bytes"),
+		meta: []byte("some metadata"),
+	}
+	sink.Set(inEntry)
+	if want := "some bytes"; string(data) != want {
+		t.Errorf("Set resulted in data %q; want %q", data, want)
+	}
+	if want := "some metadata"; string(meta) != want {
+		t.Errorf("Set resulted in meta %q; want %q", meta, want)
 	}
 	v, err := sink.view()
 	if err != nil {
 		t.Fatalf("view after SetBytes failed: %v", err)
 	}
-	if &inBytes[0] == &dst[0] {
-		t.Error("inBytes and dst share memory")
+	if &inEntry.data[0] == &data[0] {
+		t.Error("inEntry.data and data share memory")
 	}
-	if &inBytes[0] == &v.b[0] {
-		t.Error("inBytes and view share memory")
+	if &inEntry.data[0] == &v.data[0] {
+		t.Error("inEntry.data and view share memory")
 	}
-	if &dst[0] == &v.b[0] {
-		t.Error("dst and view share memory")
+	if &data[0] == &v.data[0] {
+		t.Error("data and view share memory")
+	}
+
+	if &inEntry.meta[0] == &meta[0] {
+		t.Error("inEntry.meta and meta share memory")
+	}
+	if &inEntry.meta[0] == &v.meta[0] {
+		t.Error("inEntry.meta and view share memory")
+	}
+	if &meta[0] == &v.meta[0] {
+		t.Error("meta and view share memory")
 	}
 }
 
@@ -387,9 +324,12 @@ func (g *orderedFlightGroup) Do(key string, fn func() (interface{}, error)) (int
 // unable to dedup calls.
 func TestNoDedup(t *testing.T) {
 	const testkey = "testkey"
-	const testval = "testval"
+	testval := CacheEntry{
+		data: []byte("testdata"),
+		meta: []byte("testmeta"),
+	}
 	g := newGroup("testgroup", 1024, GetterFunc(func(_ context.Context, key string, dest Sink) error {
-		return dest.SetString(testval)
+		return dest.Set(testval)
 	}), nil)
 
 	orderedGroup := &orderedFlightGroup{
@@ -405,15 +345,15 @@ func TestNoDedup(t *testing.T) {
 	// empty, it will miss.  Both will enter load(), but we will only
 	// allow one at a time to enter singleflight.Do, so the callback
 	// function will be called twice.
-	resc := make(chan string, 2)
+	resc := make(chan CacheEntry, 2)
 	for i := 0; i < 2; i++ {
 		go func() {
-			var s string
-			if err := g.Get(dummyCtx, testkey, StringSink(&s)); err != nil {
-				resc <- "ERROR:" + err.Error()
+			var e CacheEntry
+			if err := g.Get(dummyCtx, testkey, CacheEntrySink(&e)); err != nil {
+				resc <- CacheEntry{data: []byte("ERROR:" + err.Error())}
 				return
 			}
-			resc <- s
+			resc <- e
 		}()
 	}
 
@@ -426,7 +366,7 @@ func TestNoDedup(t *testing.T) {
 	orderedGroup.stage2 <- true
 
 	for i := 0; i < 2; i++ {
-		if s := <-resc; s != testval {
+		if s := <-resc; string(s.data) != string(testval.data) || string(s.meta) != string(testval.meta) {
 			t.Errorf("result is %s want %s", s, testval)
 		}
 	}
@@ -439,7 +379,7 @@ func TestNoDedup(t *testing.T) {
 	// If the singleflight callback doesn't double-check the cache again
 	// upon entry, we would increment nbytes twice but the entry would
 	// only be in the cache once.
-	const wantBytes = int64(len(testkey) + len(testval))
+	wantBytes := int64(len(testkey) + testval.Len())
 	if g.mainCache.nbytes != wantBytes {
 		t.Errorf("cache has %d bytes, want %d", g.mainCache.nbytes, wantBytes)
 	}

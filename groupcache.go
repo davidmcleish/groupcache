@@ -220,7 +220,7 @@ func (g *Group) Get(ctx context.Context, key string, dest Sink) error {
 
 	if cacheHit {
 		g.Stats.CacheHits.Add(1)
-		return setSinkView(dest, value)
+		return dest.Set(value)
 	}
 
 	// Optimization to avoid double unmarshalling or copying: keep
@@ -235,11 +235,11 @@ func (g *Group) Get(ctx context.Context, key string, dest Sink) error {
 	if destPopulated {
 		return nil
 	}
-	return setSinkView(dest, value)
+	return dest.Set(value)
 }
 
 // load loads key either by invoking the getter locally or by sending it to another machine.
-func (g *Group) load(ctx context.Context, key string, dest Sink) (value ByteView, destPopulated bool, err error) {
+func (g *Group) load(ctx context.Context, key string, dest Sink) (value CacheEntry, destPopulated bool, err error) {
 	g.Stats.Loads.Add(1)
 	viewi, err := g.loadGroup.Do(key, func() (interface{}, error) {
 		// Check the cache again because singleflight can only dedup calls
@@ -269,7 +269,7 @@ func (g *Group) load(ctx context.Context, key string, dest Sink) (value ByteView
 		}
 		g.Stats.LoadsDeduped.Add(1)
 		fullKey, start, end, isRange := KeyToRange(key)
-		var value ByteView
+		var value CacheEntry
 		var err error
 		if peer, ok := g.peers.PickPeer(fullKey); ok {
 			value, err = g.getFromPeer(ctx, peer, key)
@@ -294,33 +294,33 @@ func (g *Group) load(ctx context.Context, key string, dest Sink) (value ByteView
 		g.Stats.LocalLoads.Add(1)
 		g.populateCache(fullKey, value, &g.mainCache)
 		if isRange {
-			value = value.Slice(int(start), int(end))
+			value.data = value.data[start:end]
 		}
 		return value, nil
 	})
 	if err == nil {
-		value = viewi.(ByteView)
+		value = viewi.(CacheEntry)
 	}
 	return
 }
 
-func (g *Group) getLocally(ctx context.Context, key string, dest Sink) (ByteView, bool, error) {
+func (g *Group) getLocally(ctx context.Context, key string, dest Sink) (CacheEntry, bool, error) {
 	var destPopulated bool
 	viewi, err := g.getGroup.Do(key, func() (interface{}, error) {
 		err := g.getter.Get(ctx, key, dest)
 		if err != nil {
-			return ByteView{}, err
+			return CacheEntry{}, err
 		}
 		destPopulated = true
 		return dest.view()
 	})
 	if err != nil {
-		return ByteView{}, false, err
+		return CacheEntry{}, false, err
 	}
-	return viewi.(ByteView), destPopulated, nil
+	return viewi.(CacheEntry), destPopulated, nil
 }
 
-func (g *Group) getFromPeer(ctx context.Context, peer ProtoGetter, key string) (ByteView, error) {
+func (g *Group) getFromPeer(ctx context.Context, peer ProtoGetter, key string) (CacheEntry, error) {
 	req := &pb.GetRequest{
 		Group: &g.name,
 		Key:   &key,
@@ -328,9 +328,12 @@ func (g *Group) getFromPeer(ctx context.Context, peer ProtoGetter, key string) (
 	res := &pb.GetResponse{}
 	err := peer.Get(ctx, req, res)
 	if err != nil {
-		return ByteView{}, err
+		return CacheEntry{}, err
 	}
-	value := ByteView{b: res.Value}
+	value := CacheEntry{
+		data: res.Value,
+		meta: res.Metadata,
+	}
 	// TODO(bradfitz): use res.MinuteQps or something smart to
 	// conditionally populate hotCache.  For now just do it some
 	// percentage of the time.
@@ -340,7 +343,7 @@ func (g *Group) getFromPeer(ctx context.Context, peer ProtoGetter, key string) (
 	return value, nil
 }
 
-func (g *Group) lookupCache(key string) (value ByteView, ok bool) {
+func (g *Group) lookupCache(key string) (value CacheEntry, ok bool) {
 	fullKey, start, end, isRange := KeyToRange(key)
 	if g.cacheBytes <= 0 {
 		return
@@ -348,7 +351,7 @@ func (g *Group) lookupCache(key string) (value ByteView, ok bool) {
 	value, ok = g.mainCache.get(fullKey)
 	if ok {
 		if isRange {
-			value = value.Slice(int(start), int(end))
+			value.data = value.data[start:end]
 		}
 		return
 	}
@@ -357,7 +360,7 @@ func (g *Group) lookupCache(key string) (value ByteView, ok bool) {
 	return
 }
 
-func (g *Group) populateCache(key string, value ByteView, cache *cache) {
+func (g *Group) populateCache(key string, value CacheEntry, cache *cache) {
 	if g.cacheBytes <= 0 {
 		return
 	}
@@ -396,6 +399,15 @@ const (
 	HotCache
 )
 
+type CacheEntry struct {
+	data []byte
+	meta []byte
+}
+
+func (c CacheEntry) Len() int {
+	return len(c.data) + len(c.meta)
+}
+
 // CacheStats returns stats about the provided cache within the group.
 func (g *Group) CacheStats(which CacheType) CacheStats {
 	switch which {
@@ -431,13 +443,13 @@ func (c *cache) stats() CacheStats {
 	}
 }
 
-func (c *cache) add(key string, value ByteView) {
+func (c *cache) add(key string, value CacheEntry) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.lru == nil {
 		c.lru = &lru.Cache{
 			OnEvicted: func(key lru.Key, value interface{}) {
-				val := value.(ByteView)
+				val := value.(CacheEntry)
 				c.nbytes -= int64(len(key.(string))) + int64(val.Len())
 				c.nevict++
 			},
@@ -447,7 +459,7 @@ func (c *cache) add(key string, value ByteView) {
 	c.nbytes += int64(len(key)) + int64(value.Len())
 }
 
-func (c *cache) get(key string) (value ByteView, ok bool) {
+func (c *cache) get(key string) (value CacheEntry, ok bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.nget++
@@ -459,7 +471,7 @@ func (c *cache) get(key string) (value ByteView, ok bool) {
 		return
 	}
 	c.nhit++
-	return vi.(ByteView), true
+	return vi.(CacheEntry), true
 }
 
 func (c *cache) removeOldest() {
