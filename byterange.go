@@ -1,15 +1,20 @@
 package groupcache
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 func RangeKey(key string, start, end int64) string {
-	return fmt.Sprintf("%s$%d-%d", key, start, end)
+	key = strings.ReplaceAll(key, "$", "\\$")
+	return fmt.Sprintf("%s$$%d-%d", key, start, end)
 }
 
 func KeyToRange(rk string) (string, int, int, bool) {
 	var key string
 	var start, end int
-	if n, err := fmt.Sscanf(key, "%s$%d-%d", &key, &start, &end); err != nil && n == 3 {
+	if n, err := fmt.Sscanf(key, "%s$$%d-%d", &key, &start, &end); err != nil && n == 3 {
+		key = strings.ReplaceAll(key, "\\$", "$")
 		return key, start, end, true
 	}
 	return rk, 0, 0, false

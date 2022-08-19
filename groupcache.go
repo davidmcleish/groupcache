@@ -103,6 +103,7 @@ func newGroup(name string, cacheBytes int64, getter Getter, peers PeerPicker) *G
 		peers:      peers,
 		cacheBytes: cacheBytes,
 		loadGroup:  &singleflight.Group{},
+		getGroup:   &singleflight.Group{},
 	}
 	if fn := newGroupHook; fn != nil {
 		fn(g)
@@ -167,6 +168,9 @@ type Group struct {
 	// (either locally or remotely), regardless of the number of
 	// concurrent callers.
 	loadGroup flightGroup
+
+	// TODO(davidmcleish): comment
+	getGroup flightGroup
 
 	_ int32 // force Stats to be 8-byte aligned on 32-bit platforms
 
@@ -276,20 +280,18 @@ func (g *Group) load(ctx context.Context, key string, dest Sink) (value ByteView
 			g.Stats.PeerErrors.Add(1)
 			log.Println("peer error:", err)
 			// After peer error, only fetch the range
-			value, err = g.getLocally(ctx, key, dest)
+			value, destPopulated, err = g.getLocally(ctx, key, dest)
 			if err != nil {
 				g.Stats.LocalLoadErrs.Add(1)
 			}
 			return value, err
 		}
-		// TODO(davidmcleish): singleflight using full key
-		value, err = g.getLocally(ctx, fullKey, dest)
+		value, destPopulated, err = g.getLocally(ctx, fullKey, dest)
 		if err != nil {
 			g.Stats.LocalLoadErrs.Add(1)
 			return nil, err
 		}
 		g.Stats.LocalLoads.Add(1)
-		destPopulated = true // only one caller of load gets this return value
 		g.populateCache(fullKey, value, &g.mainCache)
 		if isRange {
 			value = value.Slice(start, end)
@@ -302,12 +304,20 @@ func (g *Group) load(ctx context.Context, key string, dest Sink) (value ByteView
 	return
 }
 
-func (g *Group) getLocally(ctx context.Context, key string, dest Sink) (ByteView, error) {
-	err := g.getter.Get(ctx, key, dest)
+func (g *Group) getLocally(ctx context.Context, key string, dest Sink) (ByteView, bool, error) {
+	var destPopulated bool
+	viewi, err := g.getGroup.Do(key, func() (interface{}, error) {
+		err := g.getter.Get(ctx, key, dest)
+		if err != nil {
+			return ByteView{}, err
+		}
+		destPopulated = true
+		return dest.view()
+	})
 	if err != nil {
-		return ByteView{}, err
+		return ByteView{}, false, err
 	}
-	return dest.view()
+	return viewi.(ByteView), destPopulated, nil
 }
 
 func (g *Group) getFromPeer(ctx context.Context, peer ProtoGetter, key string) (ByteView, error) {
