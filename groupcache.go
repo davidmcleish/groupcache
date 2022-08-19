@@ -294,7 +294,13 @@ func (g *Group) load(ctx context.Context, key string, dest Sink) (value CacheEnt
 		g.Stats.LocalLoads.Add(1)
 		g.populateCache(fullKey, value, &g.mainCache)
 		if isRange {
-			value.Data = value.Data[start:end]
+			if len(value.Data) >= int(end) {
+				value.Data = value.Data[start:end]
+			} else {
+				// TODO: error?
+				value.Data = nil
+			}
+			destPopulated = false
 		}
 		return value, nil
 	})
@@ -351,7 +357,12 @@ func (g *Group) lookupCache(key string) (value CacheEntry, ok bool) {
 	value, ok = g.mainCache.get(fullKey)
 	if ok {
 		if isRange {
-			value.Data = value.Data[start:end]
+			if len(value.Data) >= int(end) {
+				value.Data = value.Data[start:end]
+			} else {
+				// TODO: error?
+				value.Data = nil
+			}
 		}
 		return
 	}
