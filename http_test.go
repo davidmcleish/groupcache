@@ -17,12 +17,15 @@ limitations under the License.
 package groupcache
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"strconv"
@@ -33,14 +36,15 @@ import (
 )
 
 var (
-	peerAddrs = flag.String("test_peer_addrs", "", "Comma-separated list of peer addresses; used by TestHTTPPool")
-	peerIndex = flag.Int("test_peer_index", -1, "Index of which peer this child is; used by TestHTTPPool")
-	peerChild = flag.Bool("test_peer_child", false, "True if running as a child process; used by TestHTTPPool")
+	peerAddrs  = flag.String("test_peer_addrs", "", "Comma-separated list of peer addresses; used by TestHTTPPool")
+	peerIndex  = flag.Int("test_peer_index", -1, "Index of which peer this child is; used by TestHTTPPool")
+	peerChild  = flag.Bool("test_peer_child", false, "True if running as a child process; used by TestHTTPPool")
+	serverAddr = flag.String("test_server_addr", "", "Address of the server Child Getters will hit ; used by TestHTTPPool")
 )
 
 func TestHTTPPool(t *testing.T) {
 	if *peerChild {
-		beChildForTestHTTPPool()
+		beChildForTestHTTPPool(t)
 		os.Exit(0)
 	}
 
@@ -48,6 +52,13 @@ func TestHTTPPool(t *testing.T) {
 		nChild = 4
 		nGets  = 100
 	)
+
+	var serverHits int
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintln(w, "Hello")
+		serverHits++
+	}))
+	defer ts.Close()
 
 	var childAddr []string
 	for i := 0; i < nChild; i++ {
@@ -62,8 +73,10 @@ func TestHTTPPool(t *testing.T) {
 			"--test_peer_child",
 			"--test_peer_addrs="+strings.Join(childAddr, ","),
 			"--test_peer_index="+strconv.Itoa(i),
+			"--test_server_addr="+ts.URL,
 		)
 		cmds = append(cmds, cmd)
+		cmd.Stdout = os.Stdout
 		wg.Add(1)
 		if err := cmd.Start(); err != nil {
 			t.Fatal("failed to start child process: ", err)
@@ -89,17 +102,86 @@ func TestHTTPPool(t *testing.T) {
 	getter := GetterFunc(func(ctx context.Context, key string, dest Sink) error {
 		return errors.New("parent getter called; something's wrong")
 	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
+	defer cancel()
+
 	g := NewGroup("httpPoolTest", 1<<20, getter)
 
 	for _, key := range testKeys(nGets) {
 		var value string
-		if err := g.Get(context.TODO(), key, StringSink(&value)); err != nil {
+		if err := g.Get(ctx, key, StringSink(&value)); err != nil {
 			t.Fatal(err)
 		}
 		if suffix := ":" + key; !strings.HasSuffix(value, suffix) {
 			t.Errorf("Get(%q) = %q, want value ending in %q", key, value, suffix)
 		}
 		t.Logf("Get key=%q, value=%q (peer:key)", key, value)
+	}
+
+	if serverHits != nGets {
+		t.Error("expected serverHits to equal nGets")
+	}
+	serverHits = 0
+
+	var value string
+	var key = "removeTestKey"
+
+	// Multiple gets on the same key
+	for i := 0; i < 2; i++ {
+		if err := g.Get(ctx, key, StringSink(&value)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Should result in only 1 server get
+	if serverHits != 1 {
+		t.Error("expected serverHits to be '1'")
+	}
+
+	// Remove the key from the cache and we should see another server hit
+	if err := g.Remove(ctx, key); err != nil {
+		t.Fatal(err)
+	}
+
+	// Get the key again
+	if err := g.Get(ctx, key, StringSink(&value)); err != nil {
+		t.Fatal(err)
+	}
+
+	// Should register another server get
+	if serverHits != 2 {
+		t.Error("expected serverHits to be '2'")
+	}
+
+	key = "setMyTestKey"
+	setValue := []byte("test set")
+	// Add the key to the cache, optionally updating our local hot cache
+	if err := g.Set(ctx, key, setValue, time.Time{}, false); err != nil {
+		t.Fatal(err)
+	}
+
+	// Get the key
+	var getValue ByteView
+	if err := g.Get(ctx, key, ByteViewSink(&getValue)); err != nil {
+		t.Fatal(err)
+	}
+
+	if serverHits != 2 {
+		t.Errorf("expected serverHits to be '3' got '%d'", serverHits)
+	}
+
+	if !bytes.Equal(setValue, getValue.ByteSlice()) {
+		t.Fatal(errors.New(fmt.Sprintf("incorrect value retrieved after set: %s", getValue)))
+	}
+
+	// Key with non-URL characters to test URL encoding roundtrip
+	key = "a b/c,d"
+	if err := g.Get(ctx, key, StringSink(&value)); err != nil {
+		t.Fatal(err)
+	}
+	if suffix := ":" + key; !strings.HasSuffix(value, suffix) {
+		t.Errorf("Get(%q) = %q, want value ending in %q", key, value, suffix)
 	}
 }
 
@@ -111,14 +193,18 @@ func testKeys(n int) (keys []string) {
 	return
 }
 
-func beChildForTestHTTPPool() {
+func beChildForTestHTTPPool(t *testing.T) {
 	addrs := strings.Split(*peerAddrs, ",")
 
 	p := NewHTTPPool("http://" + addrs[*peerIndex])
 	p.Set(addrToURL(addrs)...)
 
 	getter := GetterFunc(func(ctx context.Context, key string, dest Sink) error {
-		dest.SetString(strconv.Itoa(*peerIndex) + ":" + key)
+		if _, err := http.Get(*serverAddr); err != nil {
+			t.Logf("HTTP request from getter failed with '%s'", err)
+		}
+
+		dest.SetString(strconv.Itoa(*peerIndex)+":"+key, time.Time{})
 		return nil
 	})
 	NewGroup("httpPoolTest", 1<<20, getter)
